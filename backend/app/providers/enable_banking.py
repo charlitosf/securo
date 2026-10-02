@@ -221,6 +221,26 @@ def _is_wrong_period_error(resp: httpx.Response) -> bool:
     return isinstance(body, dict) and body.get("error") == "WRONG_TRANSACTIONS_PERIOD"
 
 
+def _is_aspsp_auth_failure(exc: Exception) -> bool:
+    """True when the bank itself refused our access (consent no longer valid).
+
+    EB wraps it as a 400 ASPSP_ERROR whose detail reads e.g. "Unauthorized,
+    authentication failure", so it never reaches the 401 → expired path.
+    """
+    if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code != 400:
+        return False
+    try:
+        body = exc.response.json()
+    except ValueError:
+        return False
+    if not isinstance(body, dict) or body.get("error") != "ASPSP_ERROR":
+        return False
+    detail = body.get("detail")
+    message = (detail.get("message") or "") if isinstance(detail, dict) else ""
+    message = message.lower()
+    return "unauthorized" in message or "authentication" in message
+
+
 class EnableBankingProvider(BankProvider):
     """Enable Banking PSD2 connector."""
 
@@ -575,10 +595,14 @@ class EnableBankingProvider(BankProvider):
         if status in TERMINAL_SESSION_STATUSES:
             raise SessionExpiredError(f"Enable Banking session is {status}")
         result: list[AccountData] = []
-        for uid in self._account_uids(data):
+        uids = self._account_uids(data)
+        auth_failures = 0
+        for uid in uids:
             try:
                 details = await self._request("GET", f"/accounts/{uid}/details")
             except (httpx.HTTPError, SessionExpiredError) as exc:
+                if _is_aspsp_auth_failure(exc):
+                    auth_failures += 1
                 # Without details we can't safely name/type the account, and a
                 # bare-uid AccountData would overwrite the stored name with a
                 # placeholder. Skip this account for this run (non-destructive:
@@ -587,6 +611,13 @@ class EnableBankingProvider(BankProvider):
                 logger.warning("Failed to fetch details for account %s: %s", uid, exc)
                 continue
             result.append(await self._build_account(details))
+        # Some banks (Openbank ES) end consent while EB still reports the
+        # session as AUTHORIZED. When the bank refuses every account, the
+        # consent is gone: raise so the user is prompted to reconnect.
+        if uids and auth_failures == len(uids):
+            raise SessionExpiredError(
+                "Enable Banking: bank refused access to every account in the session"
+            )
         return result
 
     async def get_transactions(
