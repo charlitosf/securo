@@ -898,6 +898,28 @@ async def test_get_accounts_raises_when_bank_refuses_every_account(eb_keys):
 
 
 @pytest.mark.asyncio
+async def test_get_accounts_raises_when_details_returns_401(eb_keys):
+    """EB answers the account calls with 401 EXPIRED_SESSION once the session
+    is dead. That is not a per-account failure to skip: it must propagate so
+    the connection is marked expired."""
+    provider = EnableBankingProvider()
+    details_calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sessions/sess-1":
+            return httpx.Response(200, json=_two_account_session())
+        details_calls.append(request.url.path)
+        return httpx.Response(
+            401, json={"message": "Session is expired", "error": "EXPIRED_SESSION"}
+        )
+
+    with _patch_client(provider, handler):
+        with pytest.raises(SessionExpiredError):
+            await provider.get_accounts({"session_id": "sess-1"})
+    assert details_calls == ["/accounts/acc-uid-1/details"]
+
+
+@pytest.mark.asyncio
 async def test_get_accounts_skips_single_refused_account(eb_keys):
     """One refused account out of several is not a dead consent: keep the
     existing skip-and-retry behaviour and return the readable accounts."""

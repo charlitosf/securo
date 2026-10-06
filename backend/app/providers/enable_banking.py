@@ -600,14 +600,16 @@ class EnableBankingProvider(BankProvider):
         for uid in uids:
             try:
                 details = await self._request("GET", f"/accounts/{uid}/details")
-            except (httpx.HTTPError, SessionExpiredError) as exc:
+            except httpx.HTTPError as exc:
                 if _is_aspsp_auth_failure(exc):
                     auth_failures += 1
                 # Without details we can't safely name/type the account, and a
                 # bare-uid AccountData would overwrite the stored name with a
                 # placeholder. Skip this account for this run (non-destructive:
                 # the existing row and its transactions are left intact and the
-                # next sync retries) rather than corrupt it.
+                # next sync retries) rather than corrupt it. SessionExpiredError
+                # (401/410) is not caught: an expired session covers every
+                # account, so it must reach sync and mark the connection expired.
                 logger.warning("Failed to fetch details for account %s: %s", uid, exc)
                 continue
             result.append(await self._build_account(details))
