@@ -412,20 +412,20 @@ async def test_get_transactions_pages_rows_sharing_created_at_in_a_stable_order(
     for txn_id in ids:
         await _mk_txn(session, test_user, acct, id=txn_id, created_at=created_at)
 
-    paged = []
-    for page in range(1, 5):
-        rows, total, _ = await get_transactions(
-            session, test_workspace.id, test_user.id, account_id=acct.id, page=page, limit=2
-        )
-        assert total == 7
-        paged.extend(t.id for t in rows)
+    async def paged_ids(**sort):
+        paged = []
+        for page in range(1, 5):
+            rows, total, _ = await get_transactions(
+                session, test_workspace.id, test_user.id, account_id=acct.id,
+                page=page, limit=2, **sort,
+            )
+            assert total == 7
+            paged.extend(t.id for t in rows)
+        return paged
 
-    assert paged == sorted(ids, reverse=True)
-
-    by_amount, _, _ = await get_transactions(
-        session, test_workspace.id, test_user.id, account_id=acct.id, sort_by="amount"
-    )
-    assert [t.id for t in by_amount] == sorted(ids, reverse=True)
+    # Default order, and an explicit sort whose column ties on every row too.
+    assert await paged_ids() == sorted(ids, reverse=True)
+    assert await paged_ids(sort_by="amount") == sorted(ids, reverse=True)
 
 
 # ---------------------------------------------------------------------------
